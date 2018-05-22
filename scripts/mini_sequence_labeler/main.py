@@ -21,10 +21,11 @@ import random
 import pickle
 import torch
 from torch import nn
-from torch.autograd import Variable
 from torch.nn.parameter import Parameter
 import torch.nn.functional as F
 import argparse
+import time
+import pprint
 
 def reseed(seed=90210):
     random.seed(seed)
@@ -44,11 +45,14 @@ def minibatch(data, minibatch_size, reshuffle):
     for n in range(0, len(data), minibatch_size):
         yield data[n:n+minibatch_size]
 
+
 def test_wsj():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epochs', type=int, default=10,
-                        help='number of epochs to train (default: 10)')
+    parser.add_argument('--warmup',                  type=int, default=1,     help="Warmup epochs")
+    parser.add_argument('--benchmark',               type=int, default=9,    help="Benchmark epochs")
+    parser.add_argument('--jit',                     action='store_true',     help="Use JIT tracer")
     args = parser.parse_args()
+    pprint.pprint(vars(args))
 
     print
     print('# test on wsj subset')
@@ -61,18 +65,22 @@ def test_wsj():
     d_actemb = 5
 
     minibatch_size = 5
-    n_epochs = args.epochs
+    n_epochs = args.warmup + args.benchmark
     preprocess_minibatch = True
-    
+
     embed_word = nn.Embedding(n_types, d_emb)
+
     gru = nn.GRU(d_emb, d_rnn, bidirectional=True)
+    if args.jit:
+        gru = torch.jit.trace(torch.randn(5, 52, 50))(gru)
+
     embed_action = nn.Embedding(n_labels, d_actemb)
     combine_arh = nn.Linear(d_actemb + d_rnn * 2 + d_hid, d_hid)
-    
+
     initial_h_tensor = torch.Tensor(1, d_hid)
     initial_h_tensor.zero_()
     initial_h = Parameter(initial_h_tensor)
-    
+
     initial_actemb_tensor = torch.Tensor(1, d_actemb)
     initial_actemb_tensor.zero_()
     initial_actemb = Parameter(initial_actemb_tensor)
@@ -89,9 +97,12 @@ def test_wsj():
         list(policy.parameters()) +
         [initial_h, initial_actemb]
         , lr=0.01)
-    
-    for _ in range(n_epochs):
+
+    for i in range(n_epochs):
         total_loss = 0
+
+        start_cpu_secs = time.time()  # high precision only for Linux
+
         for batch in minibatch(data, minibatch_size, True):
             optimizer.zero_grad()
             loss = 0
@@ -101,9 +112,13 @@ def test_wsj():
                 # minibatch in one go (requires padding with zeros,
                 # should be masked but isn't right now)
                 all_tokens = [ex.tokens for ex in batch]
-                max_length = max(map(len, all_tokens))
+                if args.jit:
+                    # jit tracing needs fixed input?
+                    max_length = 52
+                else:
+                    max_length = max(map(len, all_tokens))
                 all_tokens = [tok + [0] * (max_length - len(tok)) for tok in all_tokens]
-                all_e = embed_word(Variable(torch.LongTensor(all_tokens), requires_grad=False))
+                all_e = embed_word(torch.tensor(all_tokens, dtype=torch.long))
                 [all_rnn_out, _] = gru(all_e)
             
             for ex in batch:
@@ -111,7 +126,7 @@ def test_wsj():
                 if preprocess_minibatch:
                     rnn_out = all_rnn_out[0,:,:].view(-1, 1, 2 * d_rnn)
                 else:
-                    e = embed_word(Variable(torch.LongTensor(ex.tokens), requires_grad=False)).view(N, 1, -1)
+                    e = embed_word(torch.tensor(ex.tokens, dtype=torch.long)).view(N, 1, -1)
                     [rnn_out, _] = gru(e)
                 prev_h = initial_h  # previous hidden state
                 actemb = initial_actemb  # embedding of previous action
@@ -131,18 +146,21 @@ def test_wsj():
                     # accumulate loss (squared error against costs)
                     truth = torch.ones(n_labels)
                     truth[ex.labels[t]] = 0
-                    loss += loss_fn(pred_vec, Variable(truth, requires_grad=False))
+                    loss += loss_fn(pred_vec, truth)
 
                     # cache hidden state, previous action embedding
                     prev_h = h
-                    actemb = embed_action(Variable(torch.LongTensor([pred.item()]), requires_grad=False))
+                    actemb = embed_action(torch.tensor([pred.item()], dtype=torch.long))
 
                 # print('output=%s, truth=%s' % (output, ex.labels))
 
             loss.backward()
             total_loss += float(loss)
             optimizer.step()
-        print(total_loss)
+
+        end_cpu_secs = time.time()
+        print("{}({}): {} msec ({} loss)".format(
+            "poslabeler", i, (end_cpu_secs - start_cpu_secs) * 1000,total_loss))
 
     
 if __name__ == '__main__':

@@ -1,6 +1,10 @@
 import os
 import warnings
 import sys
+from collections import namedtuple
+
+BenchResults = namedtuple('BenchResults', ['name', 'args', 'timetable'])
+TimetableRow = namedtuple('TimetableRow', ['gpu_time', 'cpu_time'])
 
 
 def init(cpu, gpu, skip_cpu_governor_check=False):
