@@ -1,17 +1,15 @@
 """Run benchmark on ParlAI Memnn Model."""
 import torch
 from torch import nn
-from torch.autograd import Variable
-from models import memnn
+from .common import AttrDict, Bench
+from .models import memnn
 import argparse
-import time
-from .common import Benchmark, make_params, over, AttrDict, Bench
 
 
 def one_to_many(query_embeddings, answer_embeddings, reply_embeddings=None):
     return query_embeddings.mm(answer_embeddings.t())
 
-    
+
 def run_memnn(args):
     nbatches = args.warmup + args.benchmark
 
