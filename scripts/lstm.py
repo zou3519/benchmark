@@ -41,8 +41,7 @@ def fused_lstm(input, hidden, w_ih, w_hh):
     return hy, cy
 
 
-def unfused_lstm(input, hidden, w_ih, w_hh):
-    hx, cx = hidden
+def unfused_lstm_traceable(input, hx, cx, w_ih, w_hh):
     #return hx.clone(), cx.clone()
     gates = input.mm(t_use(w_ih)) + hx.mm(t_use(w_hh))
 
@@ -57,6 +56,14 @@ def unfused_lstm(input, hidden, w_ih, w_hh):
     hy = outgate * cy.tanh()
 
     return hy, cy
+
+
+def decompose_hidden(expanded_fn):
+    return lambda input, hidden, w_ih, w_hh: expanded_fn(input, hidden[0], hidden[1], w_ih, w_hh)
+
+
+def unfused_lstm(input, hidden, w_ih, w_hh):
+    return unfused_lstm_traceable(input, hidden[0], hidden[1], w_ih, w_hh)
 
 
 def main():
@@ -106,18 +113,18 @@ def main():
     else:
         V = lambda x, requires_grad=False: x
 
-    if args.fused:
-        lstm = fused_lstm
-    elif args.jit:
-        lstm = torch.jit.compile(nderivs=0)(unfused_lstm)
-    else:
-        lstm = unfused_lstm
-
     input = V(torch.randn(args.batch_size, args.input_size).cuda(device=args.gpu))
     hx0   = V(torch.randn(args.batch_size, args.hidden_size).cuda(device=args.gpu), requires_grad=True)
     cx0   = V(torch.randn(args.batch_size, args.hidden_size).cuda(device=args.gpu), requires_grad=True)
     w_ih  = V(t_def(torch.randn(4 * args.hidden_size, args.input_size)).cuda(device=args.gpu), requires_grad=True)
     w_hh  = V(t_def(torch.randn(4 * args.hidden_size, args.hidden_size)).cuda(device=args.gpu), requires_grad=True)
+
+    if args.fused:
+        lstm = fused_lstm
+    elif args.jit:
+        lstm = decompose_hidden(torch.jit.trace(input, hx0, cx0, w_ih, w_hh)(unfused_lstm_traceable))
+    else:
+        lstm = unfused_lstm
 
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
