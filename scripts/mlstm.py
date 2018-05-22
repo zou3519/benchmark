@@ -41,36 +41,36 @@ def main():
     parser.add_argument('--benchmark',               type=int, default=20,    help="Benchmark iterations")
     parser.add_argument('--autograd',                action='store_true',     help="Use autograd")
     parser.add_argument('--jit',                     action='store_true',     help="Use JIT compiler (implies --autograd)")
+    parser.add_argument('--backward',                action='store_true',     help="benchmark forward + backward (implies --autograd)")
     parser.add_argument('--skip-cpu-governor-check', action='store_true',     help="Skip checking whether CPU governor is set to `performance`")
     args = parser.parse_args()
 
     if args.embed_size is None:
         args.embed_size = args.hidden_size
 
-    if args.jit:
+    if args.jit or args.backward:
         args.autograd = True
 
     pprint.pprint(vars(args))
 
     benchmark_common.init(args.cpu, args.gpu, args.skip_cpu_governor_check)
 
-    if args.autograd:
-        V = Variable
-    else:
-        V = lambda x: x
+    requires_grad = args.autograd
+    device = torch.device(args.gpu)
+
+    input = torch.randn(args.seq_len, args.batch_size, args.input_size, requires_grad=requires_grad, device=device)
+    hx    = torch.randn(args.batch_size, args.hidden_size, requires_grad=requires_grad, device=device)
+    cx    = torch.randn(args.batch_size, args.hidden_size, requires_grad=requires_grad, device=device)
+    w_xm  = torch.randn(args.embed_size, args.input_size, requires_grad=requires_grad, device=device)
+    w_hm  = torch.randn(args.embed_size, args.hidden_size, requires_grad=requires_grad, device=device)
+    w_ih  = torch.randn(4 * args.hidden_size, args.input_size, requires_grad=requires_grad, device=device)
+    w_mh  = torch.randn(4 * args.hidden_size, args.embed_size, requires_grad=requires_grad, device=device)
+    params = [input, hx, cx, w_xm, w_hm, w_ih, w_mh]
 
     if args.jit:
-        mlstm = torch.jit.compile(nderivs=0)(mlstm_raw)
+        mlstm = torch.jit.trace(input[0], hx, cx, w_xm, w_hm, w_ih, w_mh)(mlstm_raw)
     else:
         mlstm = mlstm_raw
-
-    input = V(torch.randn(args.seq_len, args.batch_size, args.input_size).cuda(device=args.gpu))
-    hx    = V(torch.randn(args.batch_size, args.hidden_size).cuda(device=args.gpu))
-    cx    = V(torch.randn(args.batch_size, args.hidden_size).cuda(device=args.gpu))
-    w_xm  = V(torch.randn(args.embed_size, args.input_size).cuda(device=args.gpu))
-    w_hm  = V(torch.randn(args.embed_size, args.hidden_size).cuda(device=args.gpu))
-    w_ih  = V(torch.randn(4 * args.hidden_size, args.input_size).cuda(device=args.gpu))
-    w_mh  = V(torch.randn(4 * args.hidden_size, args.embed_size).cuda(device=args.gpu))
 
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
@@ -79,8 +79,14 @@ def main():
         gc.collect()
         start.record()
         start_cpu_secs = time.time()  # high precision only for Linux
+        hx_t = hx
+        cx_t = cx
         for j in range(args.seq_len):
-            hx, cx = mlstm(input[j], hx, cx, w_xm, w_hm, w_ih, w_mh)
+            hx_t, cx_t = mlstm(input[j], hx_t, cx_t, w_xm, w_hm, w_ih, w_mh)
+        if args.backward:
+            hx_t.sum().backward()
+            for param in params:
+                param.grad.zero_()
         end_cpu_secs = time.time()
         end.record()
         torch.cuda.synchronize()
