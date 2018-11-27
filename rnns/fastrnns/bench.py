@@ -58,20 +58,21 @@ def trainbench(name, rnn_creator, nloops=100, warmup=10,
         if isinstance(output, tuple):
             output = output[0]
 
-        grads = torch.rand_like(output)
-        gc.collect()
+        # grads = torch.rand_like(output)
+        # gc.collect()
 
-        bwd_start_event.record()
-        output.backward(grads)
-        bwd_end_event.record()
+        # bwd_start_event.record()
+        # output.backward(grads)
+        # bwd_end_event.record()
 
-        for param in params:
-            param.grad.data.zero_()
+        # for param in params:
+        #     param.grad.data.zero_()
 
         torch.cuda.synchronize()
 
         fwd_time = fwd_start_event.elapsed_time(fwd_end_event)
-        bwd_time = bwd_start_event.elapsed_time(bwd_end_event)
+        # bwd_time = bwd_start_event.elapsed_time(bwd_end_event)
+        bwd_time = 0.
         return fwd_time, bwd_time
 
     assert device == 'cuda'

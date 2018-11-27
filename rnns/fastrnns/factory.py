@@ -3,6 +3,7 @@ import torch
 from collections import namedtuple
 
 from .cells import lstm_cell, premul_lstm_cell, flat_lstm_cell
+from torch.nn.utils.rnn import pack_sequence
 
 
 # list[list[T]] -> list[T]
@@ -187,3 +188,95 @@ def lstm_factory_multilayer(cell, script):
 
     return dynamic_rnn
 
+
+def make_varlen_inputs(num_inputs=64, input_size=512, hidden_size=512,
+                       min_seq_len=60, max_seq_len=120, device='cuda', seed=17):
+    torch.manual_seed(seed)
+    seq_lens = torch.randint(min_seq_len, max_seq_len, [num_inputs]).sort(descending=True)[0]
+    hx = torch.randn(1, num_inputs, hidden_size, device=device)
+    cx = torch.randn(1, num_inputs, hidden_size, device=device)
+    x = []
+    for i in range(num_inputs):
+        x.append(torch.randn(seq_lens[i], 1, input_size, device=device))
+    return x, hx, cx
+
+
+def make_weights(input_size=512, hidden_size=512, device='cuda',
+                 return_module=False):
+    lstm = torch.nn.LSTM(input_size, hidden_size, 1)
+    if 'cuda' in device:
+        lstm = lstm.cuda()
+
+    if return_module:
+        return lstm.all_weights, lstm
+    else:
+        # NB: lstm.all_weights format:
+        # wih, whh, bih, bhh = lstm.all_weights[layer]
+        return lstm.all_weights, None
+
+
+# type: (List[Tensor], Tuple[Tensor, Tensor], Tensor, Tensor, Tensor, Tensor) -> List[Tuple[Tensor, Tuple[Tensor, Tensor]]]
+def varlen_lstm_factory(cell, script):
+    def dynamic_rnn(input, hx, cx, wih, whh, bih, bhh):
+        # type: (List[Tensor], Tensor, Tensor, Tensor, Tensor, Tensor, Tensor) -> List[Tensor]
+        hxs = hx.unbind(1)
+        cxs = cx.unbind(1)
+        # List of: (output, (hiddens))
+        outputs = []
+
+        for batch in range(len(input)):
+            output = []
+            hy, cy = hxs[batch], cxs[batch]
+            inputs = input[batch].unbind(0)
+
+            for seq_idx in range(len(inputs)):
+                hy, cy = cell(inputs[seq_idx], (hy, cy), wih, whh, bih, bhh)
+                output += [hy]
+            outputs.append(torch.stack(output))
+            outputs.append(hy.unsqueeze(0))
+            outputs.append(cy.unsqueeze(0))
+
+        return outputs
+
+    if script:
+        cell = torch.jit.script(cell)
+        dynamic_rnn = torch.jit.script(dynamic_rnn)
+
+    return dynamic_rnn
+
+
+def varlen_pytorch_lstm_creator(**kwargs):
+    x, hx, cx = make_varlen_inputs(
+        num_inputs=kwargs['miniBatch'],
+        input_size=kwargs['inputSize'],
+        min_seq_len=kwargs['seqLength'] - 30,
+        max_seq_len=kwargs['seqLength'] + 30,
+        device=kwargs['device'],
+        seed=17)
+    _, module = make_weights(
+        input_size=kwargs['inputSize'],
+        hidden_size=kwargs['hiddenSize'],
+        device=kwargs['device'],
+        return_module=True)
+    
+    inp = pack_sequence([y.squeeze(1) for y in x])
+    return module, [inp, (hx, cx)], flatten_list(module.all_weights)
+
+
+def varlen_lstm_creator(script=True, **kwargs):
+    x, hx, cx = make_varlen_inputs(
+        num_inputs=kwargs['miniBatch'],
+        input_size=kwargs['inputSize'],
+        min_seq_len=kwargs['seqLength'] - 30,
+        max_seq_len=kwargs['seqLength'] + 30,
+        device=kwargs['device'],
+        seed=17)
+    params, _ = make_weights(
+        input_size=kwargs['inputSize'],
+        hidden_size=kwargs['hiddenSize'],
+        device=kwargs['device'])
+
+    # Be careful with the indexing... :/
+    inputs = [x, hx, cx] + params[0]
+    rnn = varlen_lstm_factory(lstm_cell, script)
+    return rnn, inputs, flatten_list([params[0]])
