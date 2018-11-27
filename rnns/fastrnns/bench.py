@@ -148,9 +148,9 @@ if __name__ == '__main__':
     rnn_results = bench(get_rnn_runners(*rnns), 'lstm', **bench_args)
     print_stderr('')
 
-    print_stderr('Benchmarking ResNets...')
-    cnn_results = bench(get_rnn_runners(*cnns), 'resnet', **bench_args)
-    print_stderr('')
+    # print_stderr('Benchmarking ResNets...')
+    # cnn_results = bench(get_rnn_runners(*cnns), 'resnet', **bench_args)
+    # print_stderr('')
 
     if args.print_json:
         rnn_results.update(cnn_results)
