@@ -37,7 +37,10 @@ def test_rnns(experim_creator, control_creator, check_grad=True, verbose=False,
 
     print("Checking outputs...")
     control_outputs = control_rnn(*control_inputs)
-    experim_outputs = experim_rnn(*experim_inputs)
+    experim_outputs = []
+    with torch.autograd.profiler.profile() as prof:
+        experim_outputs = experim_rnn(*experim_inputs)
+    print(prof)
     assertEqual(experim_outputs, control_outputs)
 
     print("Checking grads...")

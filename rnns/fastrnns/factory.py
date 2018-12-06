@@ -280,3 +280,79 @@ def varlen_lstm_creator(script=True, **kwargs):
     inputs = [x, hx, cx] + params[0]
     rnn = varlen_lstm_factory(lstm_cell, script)
     return rnn, inputs, flatten_list([params[0]])
+
+
+def varlen_batching_factory(cell, script):
+    # TODO: there are some RCB issues with torch.jit.batch
+    # TODO: List seems broken...
+    # TODO: doesn't support t() -- does the batch graph support non-batched ops? o.O
+    # TODO: support (batched, non-batched) ops (torch.mm(batched, weight))
+    #       in auto batching pass
+    # TODO: support chunk()
+    @torch.jit.batch(batch_size=64)
+    def dynamic_rnn(input, hx, cx, wih, whh, bih, bhh):
+        # output = []
+        hy = hx
+        cy = cx
+        for seq_idx in range(input.size(0)):
+            x = input.select(0, seq_idx)
+            gates = torch.matmul(x, wih) + torch.matmul(hx, whh) + bih + bhh
+
+            ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
+
+            ingate = torch.sigmoid(ingate)
+            forgetgate = torch.sigmoid(forgetgate)
+            cellgate = torch.tanh(cellgate)
+            outgate = torch.sigmoid(outgate)
+
+            cy = (forgetgate * cx) + (ingate * cellgate)
+            hy = outgate * torch.tanh(cy)
+            # output += [hy]
+
+        #return torch.stack(output), hy.unsqueeze(0), cy.unsqueeze(0)
+        return hy.unsqueeze(0), cy.unsqueeze(0)
+
+    if script:
+        cell = torch.jit.script(cell)
+        dynamic_rnn = torch.jit.script(dynamic_rnn)
+
+    return dynamic_rnn
+
+
+def make_varlen_batching_inputs(num_inputs=64, input_size=512, hidden_size=512,
+                                min_seq_len=60, max_seq_len=120, device='cuda', seed=17):
+    torch.manual_seed(seed)
+    seq_lens = torch.randint(min_seq_len, max_seq_len, [num_inputs]).sort(descending=True)[0]
+    hx = [torch.randn(1, 1, hidden_size, device=device)
+          for i in range(num_inputs)]
+    cx = [torch.randn(1, 1, hidden_size, device=device)
+          for i in range(num_inputs)]
+    x = [torch.randn(1, seq_lens[i], input_size, device=device)
+         for i in range(num_inputs)]
+    return x, hx, cx
+
+
+def varlen_batching_creator(script=True, **kwargs):
+    x, hx, cx = make_varlen_batching_inputs(
+        num_inputs=kwargs['miniBatch'],
+        input_size=kwargs['inputSize'],
+        min_seq_len=kwargs['seqLength'] - 30,
+        max_seq_len=kwargs['seqLength'] + 30,
+        device=kwargs['device'],
+        seed=17)
+    params, _ = make_weights(
+        input_size=kwargs['inputSize'],
+        hidden_size=kwargs['hiddenSize'],
+        device=kwargs['device'])
+
+    # Be careful with the indexing... :/
+    x_batched = torch.jit.BatchTensor(x, torch.tensor([1, 0]).byte())
+    hx_batched = torch.jit.BatchTensor(hx, torch.tensor([0, 0]).byte())
+    cx_batched = torch.jit.BatchTensor(cx, torch.tensor([0, 0]).byte())
+
+    inputs = [x_batched, hx_batched, cx_batched] + params[0]
+    inputs[3] = inputs[3].data.t_()
+    inputs[4] = inputs[4].data.t_()
+
+    rnn = varlen_batching_factory(lstm_cell, script)
+    return rnn, inputs, flatten_list([params[0]])

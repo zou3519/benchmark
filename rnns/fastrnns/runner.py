@@ -46,6 +46,7 @@ rnn_runners = {
     'cudnn': RNNRunner('cudnn', pytorch_lstm_creator, DummyContext),
     'aten': RNNRunner('aten', pytorch_lstm_creator, DisableCuDNN),
     'jit': RNNRunner('jit', lstm_creator, DummyContext),
+    'varlen_auto': RNNRunner('varlen_auto', varlen_batching_creator, DummyContext),
     'varlen_cudnn': RNNRunner('jit', varlen_pytorch_lstm_creator, DummyContext),
     'varlen_jit': RNNRunner('jit', varlen_lstm_creator, DummyContext),
     'varlen_py': RNNRunner('jit', partial(varlen_lstm_creator, script=False), DummyContext),
