@@ -5,7 +5,7 @@ import torchvision.models as cnn
 
 from .factory import pytorch_lstm_creator, lstm_creator, lstm_premul_creator, \
     lstm_multilayer_creator, lstm_simple_creator, imagenet_cnn_creator, \
-    varlen_pytorch_lstm_creator, varlen_lstm_creator
+    varlen_pytorch_lstm_creator, varlen_lstm_creator, varlen_lstm_creator_test
 
 
 class DisableCuDNN():
@@ -48,6 +48,7 @@ rnn_runners = {
     'cudnn': RNNRunner('cudnn', pytorch_lstm_creator, DummyContext),
     'vl_cudnn': RNNRunner('vl_cudnn', varlen_pytorch_lstm_creator, DummyContext),
     'vl_jit': RNNRunner('vl_jit', partial(varlen_lstm_creator, script=True), DummyContext),
+    'vl_jit_unrolljam': RNNRunner('vl_jit_unrolljam', partial(varlen_lstm_creator_test, script=True), DummyContext),
     'vl_py': RNNRunner('vl_py', varlen_lstm_creator, DummyContext),
     'aten': RNNRunner('aten', pytorch_lstm_creator, DisableCuDNN),
     'jit': RNNRunner('jit', lstm_creator, DummyContext),

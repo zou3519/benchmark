@@ -55,6 +55,7 @@ def trainbench(name, rnn_creator, nloops=100, warmup=10,
         fwd_start_event.record()
         forward_output = modeldef.forward(*modeldef.inputs)
         fwd_end_event.record()
+        # print(modeldef.forward.graph_for(*modeldef.inputs))
 
         if modeldef.backward_setup is not None:
             backward_input = modeldef.backward_setup(forward_output)
@@ -145,7 +146,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     rnns = args.rnns or ['cudnn', 'aten', 'jit', 'jit_premul', 'jit_simple', 'jit_multilayer', 'py']
-    vlrnns = ['vl_cudnn', 'vl_jit', 'vl_py']
+    vlrnns = ['vl_jit_unrolljam', 'vl_jit', 'vl_cudnn', 'vl_py']
     cnns = ['resnet18', 'resnet18_jit', 'resnet50', 'resnet50_jit']
     if args.print_json:
         print_stderr = lambda *args, **kwargs: None

@@ -223,6 +223,110 @@ def varlen_lstm_creator(script=False, **kwargs):
         backward=simple_backward)
 
 
+def varlen_lstm_factory_test(cell, script):
+    def dynamic_rnn(sequences, hiddens, wih, whh, bih, bhh):
+        # type: (List[Tensor], Tuple[Tensor, Tensor], Tensor, Tensor, Tensor, Tensor) -> Tuple[List[Tensor], Tuple[List[Tensor], List[Tensor]]]
+        hx, cx = hiddens
+        hxs = hx.unbind(1)
+        cxs = cx.unbind(1)
+        # List of: (output, hx, cx)
+        outputs = []
+        hx_outs = []
+        cx_outs = []
+
+        batch_factor = 2
+
+        batch = 0
+        while batch < len(sequences):
+
+            output_a = []
+            hy_a, cy_a = hxs[batch], cxs[batch]
+            inputs_a = sequences[batch].unbind(0)
+            seqlen_a = len(inputs_a)
+
+            output_b = []
+            hy_b, cy_b = hxs[batch + 1], cxs[batch + 1]
+            inputs_b = sequences[batch + 1].unbind(0)
+            seqlen_b = len(inputs_b)
+
+            min_seqlen = seqlen_a
+            if seqlen_b < min_seqlen:
+                min_seqlen = seqlen_b
+
+            for seq_idx in range(min_seqlen):
+                input_a = inputs_a[seq_idx].unsqueeze(0)
+                input_b = inputs_b[seq_idx].unsqueeze(0)
+
+                hy_a, cy_a = cell(input_a, (hy_a, cy_a), wih, whh, bih, bhh)
+                hy_b, cy_b = cell(input_b, (hy_b, cy_b), wih, whh, bih, bhh)
+
+                output_a += [hy_a]
+                output_b += [hy_b]
+
+            seq_idx = min_seqlen
+            while seq_idx < seqlen_a:
+                input_a = inputs_a[seq_idx].unsqueeze(0)
+                hy_a, cy_a = cell(input_a, (hy_a, cy_a), wih, whh, bih, bhh)
+
+                output_a += [hy_a]
+                seq_idx += 1
+
+            seq_idx = min_seqlen
+            while seq_idx < seqlen_b:
+                input_b = inputs_b[seq_idx].unsqueeze(0)
+                hy_b, cy_b = cell(input_b, (hy_b, cy_b), wih, whh, bih, bhh)
+
+                output_b += [hy_b]
+                seq_idx += 1
+
+            outputs += [torch.stack(output_a)]
+            hx_outs += [hy_a.unsqueeze(0)]
+            cx_outs += [cy_a.unsqueeze(0)]
+
+            outputs += [torch.stack(output_b)]
+            hx_outs += [hy_b.unsqueeze(0)]
+            cx_outs += [cy_b.unsqueeze(0)]
+
+            batch += batch_factor
+
+        # compensation loop
+        batch = len(sequences) - (len(sequences) % batch_factor)
+        while batch < len(sequences):
+            output = []
+            hy, cy = hxs[batch], cxs[batch]
+            inputs = sequences[batch].unbind(0)
+
+            for seq_idx in range(len(inputs)):
+                hy, cy = cell(
+                    inputs[seq_idx].unsqueeze(0), (hy, cy), wih, whh, bih, bhh)
+                output += [hy]
+            outputs += [torch.stack(output)]
+            hx_outs += [hy.unsqueeze(0)]
+            cx_outs += [cy.unsqueeze(0)]
+
+            batch += 1
+
+        return outputs, (hx_outs, cx_outs)
+
+    if script:
+        cell = torch.jit.script(cell)
+        dynamic_rnn = torch.jit.script(dynamic_rnn)
+
+    return dynamic_rnn
+
+
+def varlen_lstm_creator_test(script=False, **kwargs):
+    sequences, _,  hidden, params, _ = varlen_lstm_inputs(
+        return_module=False, **kwargs)
+    inputs = [sequences, hidden] + params[0]
+    return ModelDef(
+        inputs=inputs,
+        params=flatten_list(params),
+        forward=varlen_lstm_factory_test(lstm_cell, script),
+        backward_setup=varlen_lstm_backward_setup,
+        backward=simple_backward)
+
+
 # input: lstm.all_weights format (wih, whh, bih, bhh = lstm.all_weights[layer])
 # output: packed_weights with format
 # packed_weights[0] is wih with size (layer, 4*hiddenSize, inputSize)
