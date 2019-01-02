@@ -223,6 +223,85 @@ def varlen_lstm_creator(script=False, **kwargs):
         backward=simple_backward)
 
 
+def varlen_userbatch_lstm_factory(cell, script):
+    def lstm(sequence, hx, cx, wih, whh, bih, bhh):
+        output = []
+        layer = 0
+        hy, cy = hx[layer], cx[layer]
+        inputs = sequence.unbind(0)
+
+        for seq_idx in range(len(inputs)):
+            hy, cy = cell(inputs[seq_idx], (hy, cy), wih, whh, bih, bhh)
+            output += [hy]
+
+        return torch.stack(output), hy.unsqueeze(0), cy.unsqueeze(0)
+
+    def batch_inputs(sequences, hxs, cxs, start, end):
+        # type: (List[Tensor], Tensor, Tensor, int, int) -> (Tensor, Tensor, Tensor, Tensor)
+        seqs = sequences[start:end]
+        assert len(seqs) > 0
+        assert seqs[0].dim() == 2
+
+        lengths = []
+        for i in range(len(seqs)):
+            lengths += [int(seqs[i].size(0))]
+        lengths = torch.tensor(lengths)
+        padded = torch.nn.utils.rnn.pad_sequence(seqs)
+
+        return padded, lengths, hxs[:, start:end], cxs[:, start:end]
+
+    def dynamic_rnn(sequences, hiddens, wih, whh, bih, bhh):
+        # type: (List[Tensor], Tuple[Tensor, Tensor], Tensor, Tensor, Tensor, Tensor) -> Tuple[List[Tensor], Tuple[List[Tensor], List[Tensor]]]
+        hx, cx = hiddens
+        # List of: (output, hx, cx)
+        outputs = []
+        hx_outs = []
+        cx_outs = []
+
+        nseq = len(sequences)
+        count = 0
+        batch_factor = 64
+
+        while count < nseq:
+            remaining = nseq - count
+            # We should really support python min(...)
+            batch_size = batch_factor
+            if batch_factor > remaining:
+                batch_size = remaining
+            padded, lengths, hy, cy = batch_inputs(sequences, hx, cx,
+                                                   count, count + batch_size)
+
+            output, hy, cy = lstm(padded, hy, cy, wih, whh, bih, bhh)
+
+            outputs += output.unbind(1)
+            hx_outs += hy.unbind(1)
+            cx_outs += cy.unbind(1)
+            count += batch_size
+
+        return outputs, (hx_outs, cx_outs)
+
+    if script:
+        cell = torch.jit.script(cell)
+        lstm = torch.jit.script(lstm)
+        # XXX: There's a bug where we can't call a python fn that takes list
+        # args. This might be preventing some backward fusions
+        # dynamic_rnn = torch.jit.script(dynamic_rnn)
+
+    return dynamic_rnn
+
+
+def varlen_userbatch_lstm_creator(script=False, **kwargs):
+    sequences, _,  hidden, params, _ = varlen_lstm_inputs(
+        return_module=False, **kwargs)
+    inputs = [sequences, hidden] + params[0]
+    return ModelDef(
+        inputs=inputs,
+        params=flatten_list(params),
+        forward=varlen_userbatch_lstm_factory(lstm_cell, script),
+        backward_setup=varlen_lstm_backward_setup,
+        backward=simple_backward)
+
+
 def varlen_lstm_factory_test(cell, script):
     def dynamic_rnn(sequences, hiddens, wih, whh, bih, bhh):
         # type: (List[Tensor], Tuple[Tensor, Tensor], Tensor, Tensor, Tensor, Tensor) -> Tuple[List[Tensor], Tuple[List[Tensor], List[Tensor]]]
